@@ -1,0 +1,14 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl wget gnupg lsb-release locales \
+    openssh-server sudo tini tmate tmux vim htop procps net-tools \
+    && locale-gen en_US.UTF-8 \
+    && mkdir -p /opt/scripts \
+    && useradd -m -s /bin/bash vpsuser \
+    && echo "vpsuser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-vpsuser
+COPY scripts/start_tmate.sh /opt/scripts/start_tmate.sh
+RUN chmod +x /opt/scripts/start_tmate.sh
+EXPOSE 22
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/opt/scripts/start_tmate.sh"]
