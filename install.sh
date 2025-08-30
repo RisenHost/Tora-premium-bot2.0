@@ -1,15 +1,11 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
 
-echo "⚙️ Installing requirements…"
-sudo apt-get update -y
-sudo apt-get install -y python3 python3-pip git docker.io docker-compose curl jq
-sudo systemctl enable --now docker
+echo "🚀 Installing bot dependencies..."
 
-echo "📦 Installing Python deps…"
+apt-get update -y
+apt-get install -y python3 python3-pip curl git jq docker.io tmate
+
 pip3 install -r requirements.txt
 
-echo "🐳 Building base image…"
-docker build -t ubuntu-22.04-with-tmate -f Dockerfile .
-
-echo "✅ Done! Configure .env and run python3 bot.py"
+echo "✅ Done. Run with: python3 bot.py"
