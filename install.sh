@@ -1,54 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# colors
 BOLD="\033[1m"; CYAN="\033[36m"; GREEN="\033[32m"; YELLOW="\033[33m"; RED="\033[31m"; NC="\033[0m"
-spin() { pid=$1; s='⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓'; i=0; tput civis; while kill -0 $pid 2>/dev/null; do printf "\r${CYAN}⚙️  %s Installing...${NC}" "${s:i++%${#s}:1}"; sleep 0.1; done; tput cnorm; printf "\r"; }
 
-echo -e "${BOLD}${CYAN}✨ Discord VPS Creator — !-prefix edition ✨${NC}"
+echo -e "${BOLD}${CYAN}→ Installing minimal dependencies...${NC}"
 
-# Python deps for bot
-(
-  apt-get update -y
-  apt-get install -y python3 python3-pip jq curl git
-) & spin $!
+apt-get update -y
+apt-get install -y python3 python3-pip curl git jq build-essential
 
-python3 -m pip install --upgrade pip >/dev/null
-pip3 install -r requirements.txt >/dev/null
-echo -e "${GREEN}✅ Python deps installed${NC}"
-
-# Docker check (no systemctl)
+# docker install if missing
 if ! command -v docker >/dev/null 2>&1; then
-  echo -e "${YELLOW}🐳 Docker not found. Attempting non-systemd install (get.docker.com)…${NC}"
+  echo -e "${YELLOW}Docker not found — attempting get.docker.com installer${NC}"
   curl -fsSL https://get.docker.com | sh
-else
-  echo -e "${GREEN}🐳 Docker present${NC}"
 fi
 
-# Build VPS base image
-echo -e "${CYAN}🐳 Building VPS base image (Ubuntu + tmate)…${NC}"
-docker build -t ubuntu-22.04-with-tmate -f Dockerfile . >/dev/null
-echo -e "${GREEN}✅ Image built: ubuntu-22.04-with-tmate${NC}"
+# python deps for bot
+python3 -m pip install --upgrade pip
+pip3 install discord.py==2.4.0 python-dotenv
 
-# Token
+# build VPS base image
+echo -e "${CYAN}→ Building VPS base image (ubuntu-22.04-with-tmate)${NC}"
+docker build -t ubuntu-22.04-with-tmate -f Dockerfile .
+
+# .env token prompt
 if [ ! -f ".env" ]; then
-  read -p "🤖 Enter your Discord Bot Token: " TOK
-  {
-    echo "DISCORD_TOKEN=$TOK"
-    echo "VPS_IMAGE=ubuntu-22.04-with-tmate"
-    echo "DOCKER_BIN=docker"
-  } > .env
+  read -p "🤖 Enter your Discord Bot Token: " BOT_TOKEN
+  cat > .env <<EOF
+DISCORD_TOKEN=$BOT_TOKEN
+VPS_IMAGE=ubuntu-22.04-with-tmate
+DOCKER_BIN=docker
+BOT_PREFIX=!
+EOF
   echo -e "${GREEN}✅ Saved token to .env${NC}"
 else
-  echo -e "${YELLOW}ℹ️ .env exists – leaving as-is${NC}"
+  echo -e "${YELLOW}ℹ️ .env exists — skipping token input${NC}"
 fi
 
-cat <<EOT
-
-${BOLD}How to run:${NC}
-  1) ${CYAN}python3 bot.py${NC}
-  2) In Discord, use: ${GREEN}!kvm-help${NC}
-
-Notes:
- • No auto-removal—containers persist.
- • Use ${GREEN}!create-vps @user${NC} to DM their tmate link.
-EOT
+echo -e "${GREEN}All set. Start the bot with:${NC} python3 bot.py"
+echo -e "Or run via docker-compose (recommended): docker-compose up -d"
