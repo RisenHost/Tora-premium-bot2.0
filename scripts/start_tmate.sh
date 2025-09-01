@@ -4,10 +4,10 @@ set -euo pipefail
 SOCK="/tmp/tmate.sock"
 OUT="/tmp/tmate-ssh.txt"
 
-# start a detached tmate session
+# Start detached tmate session (ignore if already running)
 tmate -S "$SOCK" new-session -d || true
 
-# wait up to 60s for tmate to be ready
+# Wait up to 60s for tmate ready
 for i in {1..60}; do
   if tmate -S "$SOCK" display -p '#{tmate_ssh}' >/dev/null 2>&1; then
     break
@@ -15,13 +15,13 @@ for i in {1..60}; do
   sleep 1
 done
 
-# write both ssh and web links (tmate may return several lines)
+# Write SSH and Web links to file
 {
   echo "SSH: $(tmate -S "$SOCK" display -p '#{tmate_ssh}')"
   echo "Web: $(tmate -S "$SOCK" display -p '#{tmate_web}')"
 } > "$OUT" || true
 
-# keep printing the file periodically so `docker logs` shows it, and container stays alive
+# Keep printing the file periodically so logs show session info and container stays alive
 while true; do
   [ -f "$OUT" ] && cat "$OUT" || true
   sleep 120
