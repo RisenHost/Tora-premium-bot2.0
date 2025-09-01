@@ -1,9 +1,13 @@
-# Tora-premium-bot2.0 — `!` prefix
+# Discord VPS Creator — `!` commands + tmate only
 
-Commands:
-- `!create-vps <@user>` → create VPS, DM SSH/tmate
-- `!kvm-list` → list all VPS
-- `!kvm-ssh <id>` → show tmate again
-- `!kvm-start|stop|restart|logs <id>` → manage VPS
+## Commands
+- `!create-vps <@user|username>` → spins up Ubuntu container, starts tmate, DMs link.
+- `!kvm-list` → list all VPS with owner and status.
+- `!kvm-ssh <container>` → prints tmate link again.
+- `!kvm-start|stop|restart|logs <container>`
+- `!kvm-destroy <container>` → manual removal (no auto).
 
-No auto-removal — VPS stay until you remove them.
+## Install & Run
+```bash
+bash install.sh
+python3 bot.py
