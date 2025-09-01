@@ -1,4 +1,3 @@
-# Base VPS image (containers spawned from this will run tmate on startup).
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
