@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOCKET="/tmp/tmate.sock"
-OUTTXT="/tmp/tmate-ssh.txt"
+SOCK="/tmp/tmate.sock"
+OUT="/tmp/tmate-ssh.txt"
 
-if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-  ssh-keygen -A
-fi
-
-/usr/sbin/sshd -D &
-tmate -S "$SOCKET" new-session -d
+# Start a detached tmate session and wait until it's ready
+tmate -S "$SOCK" new-session -d || true
 for i in {1..60}; do
-  if tmate -S "$SOCKET" display -p '#{tmate_ssh}' >/dev/null 2>&1; then break; fi
+  if tmate -S "$SOCK" display -p '#{tmate_ssh}' >/dev/null 2>&1; then break; fi
   sleep 1
 done
 
 {
-  echo "SSH: $(tmate -S "$SOCKET" display -p '#{tmate_ssh}')"
-  echo "Web: $(tmate -S "$SOCKET" display -p '#{tmate_web}')"
-} | tee "$OUTTXT"
+  echo "SSH: $(tmate -S "$SOCK" display -p '#{tmate_ssh}')"
+  echo "Web: $(tmate -S "$SOCK" display -p '#{tmate_web}')"
+} | tee "$OUT"
 
-while true; do cat "$OUTTXT"; sleep 120; done
+# Keep container alive and reprint link periodically
+while true; do
+  [ -f "$OUT" ] && cat "$OUT" || true
+  sleep 120
+done
