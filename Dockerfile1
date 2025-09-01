@@ -1,9 +1,18 @@
-FROM python:3.9-slim
+FROM ubuntu:22.04
 
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
 
-COPY . .
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl wget gnupg lsb-release locales \
+    openssh-client tini tmate tmux vim htop procps net-tools \
+ && locale-gen en_US.UTF-8 \
+ && mkdir -p /opt/scripts \
+ && rm -rf /var/lib/apt/lists/*
 
-CMD ["python3", "bot.py"]
+COPY scripts/start_tmate.sh /opt/scripts/start_tmate.sh
+RUN chmod +x /opt/scripts/start_tmate.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/opt/scripts/start_tmate.sh"]
