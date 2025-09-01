@@ -1,44 +1,44 @@
 #!/usr/bin/env python3
-import asyncio, json, os, random, shlex, string, subprocess, textwrap
+"""
+Discord VPS Creator (tmate-only) — ! prefix
+Requirements: docker CLI available on host and the bot container or host has access to Docker socket.
+"""
+
+import os
+import shlex
+import shutil
+import asyncio
+import subprocess
+import textwrap
+import random
+import string
+from typing import Optional, List
 from dataclasses import dataclass
-from typing import List, Optional
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN", "")
-PREFIX = "!"
+TOKEN = os.getenv("DISCORD_TOKEN")
+PREFIX = os.getenv("BOT_PREFIX", "!")
 VPS_IMAGE = os.getenv("VPS_IMAGE", "ubuntu-22.04-with-tmate")
-DOCKER = os.getenv("DOCKER_BIN", "docker")
+DOCKER_BIN = os.getenv("DOCKER_BIN", "docker")
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
-# ---------- helpers ----------
-def run(cmd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(shlex.split(cmd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-def j(cmd: List[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-def rand_suffix(n=4):
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
-
-async def animate(ctx_or_msg, base: str, emoji="✨", times=6, delay=0.35):
-    # accepts ctx (send first) or an existing message to edit
-    if isinstance(ctx_or_msg, discord.Message):
-        msg = ctx_or_msg
-    else:
-        msg = await ctx_or_msg.send(f"{emoji} {base} …")
-    dots = ["", ".", "..", "..."]
-    for i in range(times):
-        await asyncio.sleep(delay)
-        await msg.edit(content=f"{emoji} {base}{dots[i%4]}")
-    return msg
+EMOJI_OK = "✅"
+EMOJI_WARN = "⚠️"
+EMOJI_WORK = "🛠️"
+EMOJI_PC = "🖥️"
+EMOJI_KEY = "🔑"
+EMOJI_LIST = "📜"
+EMOJI_TRASH = "🗑️"
+EMOJI_CLOCK = "⌛"
 
 @dataclass
 class VPSInfo:
@@ -49,148 +49,216 @@ class VPSInfo:
     image: str
     status: str
 
-def docker_ls() -> List[VPSInfo]:
-    out = j([DOCKER, "ps", "-a", "--format", "{{.ID}} {{.Image}} {{.Names}} {{.Status}}"]).stdout.strip()
-    infos: List[VPSInfo] = []
-    for line in out.splitlines():
-        if not line.strip(): continue
-        parts = line.split(maxsplit=3)
-        if len(parts) < 4: continue
-        cid, image, name, status = parts[0], parts[1], parts[2], parts[3]
-        insp = j([DOCKER, "inspect", cid]).stdout
+# -------------------------
+# Helper utilities
+# -------------------------
+def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+    """Run a shell command and return CompletedProcess (no exceptions)."""
+    try:
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return subprocess.CompletedProcess(cmd, 124, stdout=e.stdout or "", stderr="timeout")
+
+def rand_suffix(n=5):
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+async def spinner_edit(msg: discord.Message, base: str, emoji: str = "⏳", cycles: int = 6, delay: float = 0.35):
+    dots = ["", ".", "..", "..."]
+    for i in range(cycles):
+        await asyncio.sleep(delay)
         try:
-            obj = json.loads(insp)[0]
-            labels = obj.get("Config", {}).get("Labels", {}) or {}
-            owner_id = int(labels.get("com.vps.owner_id", "0"))
-            owner_tag = labels.get("com.vps.owner_tag", "unknown")
-        except Exception:
-            owner_id, owner_tag = 0, "unknown"
+            await msg.edit(content=f"{emoji} {base}{dots[i % len(dots)]}")
+        except:
+            pass
+
+def docker_list_containers() -> List[VPSInfo]:
+    proc = run([DOCKER_BIN, "ps", "-a", "--format", "{{.ID}};;{{.Image}};;{{.Names}};;{{.Status}}"])
+    infos: List[VPSInfo] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            cid, image, name, status = line.split(";;", 3)
+        except ValueError:
+            continue
+        # get labels
+        insp = run([DOCKER_BIN, "inspect", cid])
+        owner_id = 0
+        owner_tag = "unknown"
+        if insp.returncode == 0 and insp.stdout:
+            import json
+            try:
+                obj = json.loads(insp.stdout)[0]
+                labels = obj.get("Config", {}).get("Labels", {}) or {}
+                owner_id = int(labels.get("com.vps.owner_id", "0") or 0)
+                owner_tag = labels.get("com.vps.owner_tag", "unknown")
+            except Exception:
+                pass
         infos.append(VPSInfo(cid, name, owner_id, owner_tag, image, status))
     return infos
 
-async def get_tmate_block(cid: str, timeout=60) -> Optional[str]:
-    # First try the file we write in the container
-    for _ in range(timeout // 2):
-        r = j([DOCKER, "exec", cid, "bash", "-lc", "cat /tmp/tmate-ssh.txt 2>/dev/null || true"])
-        s = r.stdout.strip()
-        if s:
-            return s
-        await asyncio.sleep(2)
+async def wait_for_tmate(cid: str, timeout: int = 90) -> Optional[str]:
+    """Wait for /tmp/tmate-ssh.txt inside container and return content."""
+    elapsed = 0
+    interval = 2
+    while elapsed < timeout:
+        proc = run([DOCKER_BIN, "exec", cid, "bash", "-lc", "cat /tmp/tmate-ssh.txt 2>/dev/null || true"])
+        out = proc.stdout.strip()
+        if out:
+            return out
+        await asyncio.sleep(interval)
+        elapsed += interval
     return None
 
-# ---------- commands ----------
+# -------------------------
+# Bot events + commands
+# -------------------------
 @bot.event
 async def on_ready():
-    await bot.change_presence(activity=discord.Game("!kvm-help • VPS Creator 🧰"))
-    print(f"✅ Logged in as {bot.user} (id={bot.user.id})")
+    try:
+        await bot.change_presence(activity=discord.Game(f"!kvm-help • ToraHosting 🖥️"))
+    except:
+        pass
+    print(f"Logged in as {bot.user} (id={bot.user.id})")
 
 @bot.command(name="kvm-help")
-async def kvm_help(ctx):
+async def kvm_help(ctx: commands.Context):
     text = textwrap.dedent(f"""
-    🎛️ **KVM / VPS Commands** (prefix `{PREFIX}`)
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    🆕 `!create-vps <@user|username>` → Create a VPS (tmate-only) and **DM** the link
-    📜 `!kvm-list` → Show **all** VPS + owners + status
-    🔑 `!kvm-ssh <container|name>` → Show the tmate link again
-    ▶️ `!kvm-start <container>` • ⏹️ `!kvm-stop <container>` • 🔁 `!kvm-restart <container>`
-    📄 `!kvm-logs <container>` → Tail recent logs
-    🗑️ `!kvm-destroy <container>` → Remove VPS (manual only, no auto-removal!)
-    🆘 `!kvm-help` → This menu
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {EMOJI_PC} **ToraHosting — KVM / VPS Commands** (prefix `{PREFIX}`)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {EMOJI_WORK} `!create-vps <@user|username>` — Create a VPS (tmate-only) and DM the tmate link
+    {EMOJI_LIST} `!kvm-list` — List all VPS containers with owners
+    {EMOJI_KEY} `!kvm-ssh <container>` — Re-send tmate SSH/Web link from container
+    ▶️ `!kvm-start <container>` — Start a container
+    ⏹️ `!kvm-stop <container>` — Stop a container
+    🔁 `!kvm-restart <container>` — Restart a container
+    📄 `!kvm-logs <container>` — Show last logs
+    {EMOJI_TRASH} `!kvm-destroy <container>` — Remove container (manual)
+    {EMOJI_CLOCK} `!ping` — Ping
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     """)
     await ctx.reply(text)
 
+@bot.command(name="ping")
+async def ping(ctx: commands.Context):
+    await ctx.reply(f"🏓 Pong! ({EMOJI_OK})")
+
 @bot.command(name="create-vps")
 @commands.has_permissions(manage_guild=True)
-async def create_vps(ctx, target: str):
-    # resolve member
-    member = ctx.message.mentions[0] if ctx.message.mentions else discord.utils.find(
-        lambda m: str(m) == target or m.name == target or m.display_name == target, ctx.guild.members
-    )
+async def create_vps(ctx: commands.Context, target: str):
+    # resolve member (mention preferred)
+    member = None
+    if ctx.message.mentions:
+        member = ctx.message.mentions[0]
+    else:
+        member = discord.utils.find(lambda m: str(m) == target or m.name == target or m.display_name == target, ctx.guild.members)
     if not member:
-        return await ctx.reply(f"⚠️ I can’t find `{target}`. Mention the user or type exact username.")
+        return await ctx.reply(f"{EMOJI_WARN} Could not find user `{target}`.")
 
-    base = f"Booting VPS for {member.mention}"
-    msg = await animate(ctx, base, "⚙️", times=6, delay=0.3)
+    base_text = f"Creating VPS for {member.mention}"
+    msg = await ctx.reply(f"{EMOJI_CLOCK} {base_text} — starting...")
+    await spinner_edit(msg, base_text, emoji="⚙️", cycles=6, delay=0.35)
 
-    # unique name + labels
-    name = f"vps_{member.id}_{rand_suffix()}"
+    # unique container name
+    cname = f"vps_{member.id}_{rand_suffix:=(''.join(random.choices(string.ascii_lowercase+string.digits, k=4)))}"
+    # safer approach for name (no spaces)
+    cname = f"vps_{member.id}_{rand_suffix()}"
+
+    # docker run options: labels to map owner
     labels = [
         f"--label=com.vps.owner_id={member.id}",
-        f"--label=com.vps.owner_tag={str(member)}",
-        f"--label=com.vps.created_by=discord-bot",
+        f"--label=com.vps.owner_tag={str(member)}"
     ]
-    # run container
-    r = j([DOCKER, "run", "-d", "--restart", "unless-stopped", "--name", name, *labels, VPS_IMAGE])
-    if r.returncode != 0:
-        return await msg.edit(content=f"❌ Failed to start container:\n```{r.stderr.strip()}```")
 
-    cid = r.stdout.strip()
-    await msg.edit(content=f"🧰 Installing tmate inside `{name}`…")
-    # start script will already run tmate; just wait for link
-    link = await get_tmate_block(cid, timeout=90)
+    cmd = [DOCKER_BIN, "run", "-d", "--restart", "unless-stopped", "--name", cname] + labels + [VPS_IMAGE]
+    proc = run(cmd, timeout=30)
+    if proc.returncode != 0:
+        return await msg.edit(content=f"{EMOJI_WARN} Failed to launch container:\n```{proc.stderr.strip()}```")
 
-    if not link:
-        return await msg.edit(content="⚠️ Timed out waiting for tmate link. Run `!kvm-ssh {name}` later.")
+    cid = proc.stdout.strip()
+    await msg.edit(content=f"{EMOJI_WORK} Container `{cname}` started — waiting for tmate…")
 
-    # DM user
+    # wait for tmate file inside container
+    tmate_text = await wait_for_tmate(cid, timeout=120)
+    if not tmate_text:
+        await msg.edit(content=f"{EMOJI_WARN} Timed out while waiting for tmate link. Use `!kvm-ssh {cname}` later.")
+        return
+
+    # send DM to member with the tmate block (SSH + Web lines)
     try:
-        await member.send(f"🔑 **Your VPS is ready!**\n\n{link}")
+        dm = await member.create_dm()
+        await dm.send(f"{EMOJI_KEY} **Your VPS is ready!**\n\n{tmate_text}\n\n{EMOJI_PC} Container: `{cname}`")
     except discord.Forbidden:
-        await ctx.reply(f"⚠️ Could not DM {member.mention}. They may have DMs closed.")
-    await msg.edit(content=f"🎉 VPS `{name}` created for {member.mention}! Link sent via DM.")
+        await ctx.reply(f"{EMOJI_WARN} Could not DM {member.mention}. They may have DMs disabled.")
+
+    await msg.edit(content=f"{EMOJI_OK} VPS `{cname}` created for {member.mention} — tmate link DM'd.")
 
 @bot.command(name="kvm-list")
-async def kvm_list(ctx):
-    infos = docker_ls()
+async def kvm_list(ctx: commands.Context):
+    infos = docker_list_containers()
     if not infos:
-        return await ctx.reply("📭 No VPS containers yet.")
+        return await ctx.reply(f"{EMOJI_LIST} No VPS containers found.")
     lines = []
-    for i in infos:
-        owner = f"<@{i.owner_id}>" if i.owner_id else i.owner_tag
-        lines.append(f"• **{i.name}** — {owner} — `{i.status}`")
-    await ctx.reply("📜 **All VPS**\n" + "\n".join(lines))
+    for v in infos:
+        owner = f"<@{v.owner_id}>" if v.owner_id else v.owner_tag
+        lines.append(f"• **{v.name}** — {owner} — `{v.status}`")
+    out = "\n".join(lines)
+    await ctx.reply(f"{EMOJI_LIST} **Active VPS**\n{out}")
 
 @bot.command(name="kvm-ssh")
-async def kvm_ssh(ctx, ident: str):
-    await animate(ctx, f"Fetching tmate for `{ident}`", "🔑", times=3, delay=0.25)
-    r = j([DOCKER, "exec", ident, "bash", "-lc", "cat /tmp/tmate-ssh.txt 2>/dev/null || true"])
-    s = r.stdout.strip()
-    if not s:
-        return await ctx.reply("⚠️ No tmate link yet. The session might still be initializing.")
-    await ctx.reply(f"🔗 {s}")
+async def kvm_ssh(ctx: commands.Context, ident: str):
+    msg = await ctx.reply(f"{EMOJI_CLOCK} Fetching tmate for `{ident}`…")
+    await spinner_edit(msg, f"Fetching tmate for {ident}", emoji="🔑", cycles=4, delay=0.3)
+    proc = run([DOCKER_BIN, "exec", ident, "bash", "-lc", "cat /tmp/tmate-ssh.txt 2>/dev/null || true"])
+    out = proc.stdout.strip()
+    if not out:
+        return await msg.edit(content=f"{EMOJI_WARN} No tmate info found for `{ident}` yet.")
+    await msg.edit(content=f"{EMOJI_KEY} {out}")
 
 @bot.command(name="kvm-start")
-async def kvm_start(ctx, ident: str):
-    r = j([DOCKER, "start", ident])
-    await ctx.reply("▶️ Started." if r.returncode == 0 else f"❌ {r.stderr}")
+@commands.has_permissions(manage_guild=True)
+async def kvm_start(ctx: commands.Context, ident: str):
+    proc = run([DOCKER_BIN, "start", ident])
+    await ctx.reply(EMOJI_OK + " Started." if proc.returncode == 0 else EMOJI_WARN + " " + proc.stderr)
 
 @bot.command(name="kvm-stop")
-async def kvm_stop(ctx, ident: str):
-    r = j([DOCKER, "stop", ident])
-    await ctx.reply("⏹️ Stopped." if r.returncode == 0 else f"❌ {r.stderr}")
+@commands.has_permissions(manage_guild=True)
+async def kvm_stop(ctx: commands.Context, ident: str):
+    proc = run([DOCKER_BIN, "stop", ident])
+    await ctx.reply(EMOJI_OK + " Stopped." if proc.returncode == 0 else EMOJI_WARN + " " + proc.stderr)
 
 @bot.command(name="kvm-restart")
-async def kvm_restart(ctx, ident: str):
-    r = j([DOCKER, "restart", ident])
-    await ctx.reply("🔁 Restarted." if r.returncode == 0 else f"❌ {r.stderr}")
+@commands.has_permissions(manage_guild=True)
+async def kvm_restart(ctx: commands.Context, ident: str):
+    proc = run([DOCKER_BIN, "restart", ident])
+    await ctx.reply(EMOJI_OK + " Restarted." if proc.returncode == 0 else EMOJI_WARN + " " + proc.stderr)
 
 @bot.command(name="kvm-logs")
-async def kvm_logs(ctx, ident: str):
-    r = j([DOCKER, "logs", "--tail", "80", ident])
-    if r.returncode != 0:
-        return await ctx.reply(f"❌ {r.stderr}")
-    out = r.stdout[-1800:] if r.stdout else ""
-    await ctx.reply(f"```txt\n{out}\n```" if out else "ℹ️ No logs.")
+async def kvm_logs(ctx: commands.Context, ident: str):
+    proc = run([DOCKER_BIN, "logs", "--tail", "120", ident])
+    if proc.returncode != 0:
+        return await ctx.reply(f"{EMOJI_WARN} {proc.stderr}")
+    out = proc.stdout or ""
+    if len(out) > 1800:
+        out = out[-1800:]
+    await ctx.reply(f"```{out}```" if out else "ℹ️ No logs available.")
 
 @bot.command(name="kvm-destroy")
 @commands.has_permissions(manage_guild=True)
-async def kvm_destroy(ctx, ident: str):
-    await animate(ctx, f"Removing `{ident}`", "🗑️", times=4, delay=0.25)
-    r1 = j([DOCKER, "rm", "-f", ident])
-    await ctx.reply("✅ Destroyed." if r1.returncode == 0 else f"❌ {r1.stderr}")
+async def kvm_destroy(ctx: commands.Context, ident: str):
+    confirm_msg = await ctx.reply(f"{EMOJI_TRASH} Removing `{ident}` — this is permanent. Type `confirm` in chat to proceed within 20s.")
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "confirm"
+    try:
+        reply = await bot.wait_for("message", timeout=20.0, check=check)
+    except asyncio.TimeoutError:
+        return await confirm_msg.edit(content=f"{EMOJI_WARN} Cancelling destroy — no confirmation received.")
+    proc = run([DOCKER_BIN, "rm", "-f", ident])
+    await ctx.reply(EMOJI_OK + " Destroyed." if proc.returncode == 0 else EMOJI_WARN + " " + proc.stderr)
 
-# run
+# -------------------------
+# Boot
+# -------------------------
 if not TOKEN:
-    raise SystemExit("Set DISCORD_TOKEN in .env")
+    raise SystemExit("Set DISCORD_TOKEN in .env before running.")
 bot.run(TOKEN)
